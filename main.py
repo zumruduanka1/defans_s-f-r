@@ -1,10 +1,13 @@
 from flask import Flask, request, jsonify, render_template_string
-import requests, os, smtplib, threading, time, re
+import requests, os, smtplib, threading, time
 from email.mime.text import MIMEText
+import feedparser
 
 app = Flask(__name__)
 
+# ENV
 TW = os.getenv("TWITTER_BEARER")
+HF_API_KEY = os.getenv("HF_API_KEY")
 EMAIL_USER = os.getenv("EMAIL_USER")
 EMAIL_PASS = os.getenv("EMAIL_PASS")
 EMAIL_TO = os.getenv("EMAIL_TO")
@@ -26,40 +29,97 @@ def send_mail(text, risk):
     except:
         pass
 
-# ---------------- TWITTER ----------------
-def get_twitter():
+# ---------------- AI ----------------
+def ai_score(text):
     try:
-        r = requests.get(
-            "https://api.twitter.com/2/tweets/search/recent?query=haber -is:retweet lang:tr&max_results=10",
-            headers={"Authorization": f"Bearer {TW}"}
+        if not HF_API_KEY:
+            return None
+
+        r = requests.post(
+            "https://api-inference.huggingface.co/models/facebook/bart-large-mnli",
+            headers={"Authorization": f"Bearer {HF_API_KEY}"},
+            json={
+                "inputs": text,
+                "parameters": {
+                    "candidate_labels": ["dezenformasyon","güvenilir haber"]
+                }
+            },
+            timeout=5
         )
-        data = r.json().get("data", [])
-        return [x["text"] for x in data]
+
+        d = r.json()
+        if isinstance(d, list):
+            return int(d[0]["scores"][0] * 100)
     except:
-        return [
-            "Sosyal medyada yayılan şok iddia",
-            "Yeni gelişme tartışma yarattı",
-            "Yanlış bilgi hızla yayılıyor"
-        ]
+        return None
 
 # ---------------- SCORE ----------------
 def score(text):
     t = text.lower()
-    r = 20
+    base = 20
 
     if any(x in t for x in ["şok","ifşa","gizli","yalan","komplo"]):
-        r += 30
+        base += 30
     if "iddia" in t:
-        r += 20
+        base += 20
 
-    return min(100, r)
+    ai = ai_score(text)
+
+    if ai:
+        return min(100, int((base + ai) / 2))
+    return min(100, base)
+
+# ---------------- SOURCES ----------------
+def get_sources():
+    sources = []
+
+    try:
+        g = feedparser.parse("https://news.google.com/rss?hl=tr&gl=TR&ceid=TR:tr")
+        for e in g.entries[:5]:
+            sources.append(e.title)
+    except:
+        pass
+
+    try:
+        t = feedparser.parse("https://www.trthaber.com/rss/son-dakika.rss")
+        for e in t.entries[:5]:
+            sources.append(e.title)
+    except:
+        pass
+
+    try:
+        a = feedparser.parse("https://www.aa.com.tr/tr/rss/default?cat=guncel")
+        for e in a.entries[:5]:
+            sources.append(e.title)
+    except:
+        pass
+
+    if TW:
+        try:
+            r = requests.get(
+                "https://api.twitter.com/2/tweets/search/recent?query=haber lang:tr -is:retweet&max_results=5",
+                headers={"Authorization": f"Bearer {TW}"}
+            )
+            data = r.json().get("data", [])
+            for x in data:
+                sources.append(x["text"])
+        except:
+            pass
+
+    if not sources:
+        sources = [
+            "Sosyal medyada yayılan şok iddia",
+            "Yanlış bilgi hızla yayılıyor",
+            "Gündemde tartışma yaratan açıklama"
+        ]
+
+    return sources
 
 # ---------------- WORKER ----------------
 def worker():
     global feed, alerts
     while True:
-        data = get_twitter()
-
+        data = get_sources()
         f=[]; a=[]
 
         for t in data:
@@ -72,7 +132,7 @@ def worker():
 
         feed = f
         alerts = a
-        time.sleep(30)
+        time.sleep(20)
 
 threading.Thread(target=worker, daemon=True).start()
 
@@ -103,98 +163,27 @@ def data():
 # ---------------- UI ----------------
 @app.route("/")
 def home():
-    return render_template_string("""
-<!DOCTYPE html>
+    return render_template_string("""<!DOCTYPE html>
 <html>
 <head>
 <title>DEFANS</title>
-
 <style>
-body{
- background:#020617;
- color:white;
- font-family:Arial;
-}
-
-.container{
- max-width:1200px;
- margin:auto;
- padding:40px;
-}
-
-h1{
- text-align:center;
- font-size:52px;
- font-weight:bold;
- background:linear-gradient(90deg,#60a5fa,#a78bfa);
- -webkit-background-clip:text;
- color:transparent;
-}
-
-.subtitle{
- text-align:center;
- color:#94a3b8;
- margin-bottom:30px;
-}
-
-.stats{
- display:grid;
- grid-template-columns:repeat(3,1fr);
- gap:15px;
- margin-bottom:20px;
-}
-
-.stat{
- background:#0f172a;
- padding:20px;
- border-radius:15px;
- text-align:center;
-}
-
-.grid{
- display:grid;
- grid-template-columns:1fr 1fr;
- gap:20px;
-}
-
-.card{
- background:#0f172a;
- padding:20px;
- border-radius:15px;
-}
-
-input{
- width:100%;
- padding:12px;
- border-radius:10px;
- background:#020617;
- color:white;
- border:1px solid #1e293b;
-}
-
-button{
- width:100%;
- padding:14px;
- border:none;
- border-radius:12px;
- background:linear-gradient(90deg,#6366f1,#a855f7);
- color:white;
- margin-top:10px;
-}
-
-.item{
- padding:10px;
- border-bottom:1px solid #1e293b;
-}
-
+body{background:#020617;color:white;font-family:Arial;}
+.container{max-width:1200px;margin:auto;padding:40px;}
+h1{text-align:center;font-size:52px;font-weight:bold;background:linear-gradient(90deg,#60a5fa,#a78bfa);-webkit-background-clip:text;color:transparent;}
+.subtitle{text-align:center;color:#94a3b8;margin-bottom:30px;}
+.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:15px;margin-bottom:20px;}
+.stat{background:#0f172a;padding:20px;border-radius:15px;text-align:center;}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:20px;}
+.card{background:#0f172a;padding:20px;border-radius:15px;}
+input{width:100%;padding:12px;border-radius:10px;background:#020617;color:white;border:1px solid #1e293b;}
+button{width:100%;padding:14px;border:none;border-radius:12px;background:linear-gradient(90deg,#6366f1,#a855f7);color:white;margin-top:10px;}
+.item{padding:10px;border-bottom:1px solid #1e293b;}
 .bad{color:#f59e0b}
 </style>
 </head>
-
 <body>
-
 <div class="container">
-
 <h1>DEFANS</h1>
 <p class="subtitle">Sosyal Medya Dezenformasyon Analiz Sistemi</p>
 
@@ -229,19 +218,12 @@ button{
 </div>
 
 </div>
-
 </div>
 
 <script>
 async function analyze(){
  let url=document.getElementById("url").value
-
- let r=await fetch("/api/analyze",{
-  method:"POST",
-  headers:{"Content-Type":"application/json"},
-  body:JSON.stringify({text:url})
- })
-
+ let r=await fetch("/api/analyze",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({text:url})})
  let d=await r.json()
  document.getElementById("result").innerText = d.risk ? "%"+d.risk : d.error
  load()
@@ -254,19 +236,9 @@ async function load(){
  let f="",a="",h=""
  let total=0,risk=0,sum=0
 
- d.feed.forEach(x=>{
-  f+=`<div class="item">${x.text} (%${x.risk})</div>`
-  total++; sum+=x.risk
- })
-
- d.alerts.forEach(x=>{
-  a+=`<div class="item bad">${x.text} (%${x.risk})</div>`
-  risk++
- })
-
- d.history.forEach(x=>{
-  h+=`<div class="item">${x.text} (%${x.risk})</div>`
- })
+ d.feed.forEach(x=>{f+=`<div class="item">${x.text} (%${x.risk})</div>`; total++; sum+=x.risk})
+ d.alerts.forEach(x=>{a+=`<div class="item bad">${x.text} (%${x.risk})</div>`; risk++})
+ d.history.forEach(x=>{h+=`<div class="item">${x.text} (%${x.risk})</div>`})
 
  document.getElementById("feed").innerHTML=f
  document.getElementById("alerts").innerHTML=a
@@ -280,10 +252,8 @@ async function load(){
 setInterval(load,4000)
 load()
 </script>
-
 </body>
-</html>
-""")
+</html>""")
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
