@@ -1,8 +1,7 @@
 from flask import Flask, request, jsonify, render_template_string
-import requests, os, smtplib, threading, time
+import requests, os, smtplib, threading, time, random
 from email.mime.text import MIMEText
 import feedparser
-import random
 
 app = Flask(__name__)
 
@@ -12,7 +11,10 @@ EMAIL_USER = os.getenv("EMAIL_USER")
 EMAIL_PASS = os.getenv("EMAIL_PASS")
 EMAIL_TO = os.getenv("EMAIL_TO")
 
-feed, alerts, history = [], [], []
+# 🔥 BAŞLANGIÇ VERİ (takılmayı önler)
+feed = [{"text":"Sistem başlatılıyor...","risk":10}]
+alerts = []
+history = []
 
 # ---------------- MAIL ----------------
 def send_mail(text, risk):
@@ -64,10 +66,7 @@ def score(text):
         base += 25
 
     ai = ai_score(text)
-
-    if ai:
-        return min(100, int((base + ai) / 2))
-    return min(100, base)
+    return min(100, int((base + ai)/2)) if ai else min(100, base)
 
 # ---------------- SOURCES ----------------
 def get_sources():
@@ -86,60 +85,60 @@ def get_sources():
     for url in urls:
         try:
             data = feedparser.parse(url)
-            for e in data.entries[:10]:
+            for e in data.entries[:8]:
                 if hasattr(e, "title"):
                     sources.append(e.title)
         except:
             pass
 
-    # Twitter (opsiyonel)
     if TW:
         try:
             r = requests.get(
-                "https://api.twitter.com/2/tweets/search/recent?query=haber lang:tr -is:retweet&max_results=10",
+                "https://api.twitter.com/2/tweets/search/recent?query=haber lang:tr -is:retweet&max_results=8",
                 headers={"Authorization": f"Bearer {TW}"}
             )
-            data = r.json().get("data", [])
-            for x in data:
+            for x in r.json().get("data", []):
                 sources.append(x["text"])
         except:
             pass
 
-    # 🔥 GARANTİ BOŞ KALMAZ
-    fallback = [
-        "Sosyal medyada yayılan şok iddia gündem oldu",
-        "Yanlış bilgi hızla yayılıyor uzmanlar uyardı",
-        "Doğruluğu teyit edilmemiş içerik viral oldu",
-        "Manipülatif haber iddiaları sosyal medyada yayılıyor",
-        "Gündemde tartışma yaratan açıklama büyük yankı uyandırdı"
-    ]
+    # fallback
+    if len(sources) < 10:
+        sources += [
+            "Sosyal medyada yayılan şok iddia",
+            "Yanlış bilgi hızla yayılıyor",
+            "Manipülatif içerik viral oldu",
+            "Doğruluğu teyit edilmemiş haber yayılıyor"
+        ]
 
-    if len(sources) < 15:
-        sources += random.sample(fallback, len(fallback))
-
-    return list(set(sources))[:25]
+    return list(set(sources))[:20]
 
 # ---------------- WORKER ----------------
 def worker():
     global feed, alerts
+
     while True:
-        data = get_sources()
+        try:
+            data = get_sources()
 
-        f=[]; a=[]
+            f=[]; a=[]
 
-        for t in data:
-            r = score(t)
+            for t in data:
+                r = score(t)
+                f.append({"text":t,"risk":r})
 
-            f.append({"text":t,"risk":r})
+                if r >= 30:
+                    a.append({"text":t,"risk":r})
+                    send_mail(t,r)
 
-            if r >= 30:
-                a.append({"text":t,"risk":r})
-                send_mail(t,r)
+            if f:
+                feed = f
+            alerts = a
 
-        feed = f if f else [{"text":"Veri yükleniyor...","risk":0}]
-        alerts = a
+        except:
+            pass
 
-        time.sleep(15)
+        time.sleep(10)
 
 threading.Thread(target=worker, daemon=True).start()
 
@@ -150,17 +149,17 @@ def keep_alive():
             requests.get("https://defans-s-f-r.onrender.com")
         except:
             pass
-        time.sleep(300)
+        time.sleep(120)
 
 threading.Thread(target=keep_alive, daemon=True).start()
 
-# ---------------- ANALYZE ----------------
+# ---------------- API ----------------
 @app.route("/api/analyze", methods=["POST"])
 def analyze():
     url = request.json.get("text")
 
     if not url.startswith("http"):
-        return {"error":"Sadece link gir"}
+        return {"error":"Link gir"}
 
     try:
         text = requests.get(url, timeout=5).text[:1000]
@@ -168,7 +167,6 @@ def analyze():
         return {"error":"İçerik alınamadı"}
 
     r = score(text)
-
     history.insert(0, {"text":url,"risk":r})
     send_mail(text,r)
 
@@ -178,11 +176,10 @@ def analyze():
 def data():
     return {"feed":feed,"alerts":alerts,"history":history[:5]}
 
-# ---------------- UI (DOKUNULMADI) ----------------
+# ---------------- UI ----------------
 @app.route("/")
 def home():
-    return render_template_string("""
-<!DOCTYPE html>
+    return render_template_string("""<!DOCTYPE html>
 <html>
 <head>
 <title>DEFANS</title>
@@ -198,14 +195,12 @@ h1{text-align:center;font-size:52px;font-weight:bold;background:linear-gradient(
 .stat{background:#0f172a;padding:20px;border-radius:15px;text-align:center;}
 .grid{display:grid;grid-template-columns:1fr 1fr;gap:20px;}
 .card{background:#0f172a;padding:20px;border-radius:15px;}
-.card:hover{transform:scale(1.02);transition:0.2s;}
 input{width:100%;padding:12px;border-radius:10px;background:#020617;color:white;border:1px solid #1e293b;}
 button{width:100%;padding:14px;border:none;border-radius:12px;background:linear-gradient(90deg,#6366f1,#a855f7);color:white;margin-top:10px;}
 .item{padding:10px;border-bottom:1px solid #1e293b;}
 .bad{color:#f59e0b}
 </style>
 </head>
-
 <body>
 
 <div class="container">
@@ -229,7 +224,7 @@ button{width:100%;padding:14px;border:none;border-radius:12px;background:linear-
 
 <div class="card">
 <h3>Yeni Analiz</h3>
-<input id="url" placeholder="Haber / Tweet linki">
+<input id="url" placeholder="Haber linki">
 <button onclick="analyze()">Analiz Başlat</button>
 <h2 id="result"></h2>
 </div>
@@ -250,7 +245,6 @@ button{width:100%;padding:14px;border:none;border-radius:12px;background:linear-
 </div>
 
 </div>
-
 </div>
 
 <script>
@@ -269,14 +263,10 @@ async function load(){
  let f="",a="",h=""
  let total=0,risk=0,sum=0
 
- if(!d.feed || d.feed.length===0){
-   f="Veri yükleniyor..."
- } else {
-   d.feed.forEach(x=>{
-     f+=`<div class="item">${x.text} (%${x.risk})</div>`
-     total++; sum+=x.risk
-   })
- }
+ d.feed.forEach(x=>{
+  f+=`<div class="item">${x.text} (%${x.risk})</div>`
+  total++; sum+=x.risk
+ })
 
  d.alerts.forEach(x=>{
   a+=`<div class="item bad">${x.text} (%${x.risk})</div>`
@@ -301,8 +291,7 @@ load()
 </script>
 
 </body>
-</html>
-""")
+</html>""")
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
