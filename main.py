@@ -5,7 +5,6 @@ import feedparser
 
 app = Flask(__name__)
 
-# ENV
 TW = os.getenv("TWITTER_BEARER")
 HF_API_KEY = os.getenv("HF_API_KEY")
 EMAIL_USER = os.getenv("EMAIL_USER")
@@ -56,18 +55,21 @@ def ai_score(text):
 # ---------------- SCORE ----------------
 def score(text):
     t = text.lower()
-    base = 20
+    base = 35
 
     if any(x in t for x in ["şok","ifşa","gizli","yalan","komplo"]):
         base += 30
-    if "iddia" in t:
-        base += 20
+    if any(x in t for x in ["iddia","iddiası","iddialar"]):
+        base += 25
 
     ai = ai_score(text)
 
     if ai:
-        return min(100, int((base + ai) / 2))
-    return min(100, base)
+        final = int((base + ai) / 2)
+    else:
+        final = base
+
+    return min(100, final)
 
 # ---------------- SOURCES ----------------
 def get_sources():
@@ -113,7 +115,7 @@ def get_sources():
             "Gündemde tartışma yaratan açıklama"
         ]
 
-    return sources
+    return list(set(sources))
 
 # ---------------- WORKER ----------------
 def worker():
@@ -126,7 +128,7 @@ def worker():
             r = score(t)
             f.append({"text":t,"risk":r})
 
-            if r >= 40:
+            if r >= 30:
                 a.append({"text":t,"risk":r})
                 send_mail(t,r)
 
@@ -135,6 +137,17 @@ def worker():
         time.sleep(20)
 
 threading.Thread(target=worker, daemon=True).start()
+
+# ---------------- KEEP ALIVE ----------------
+def keep_alive():
+    while True:
+        try:
+            requests.get("https://defans-s-f-r.onrender.com")
+        except:
+            pass
+        time.sleep(300)
+
+threading.Thread(target=keep_alive, daemon=True).start()
 
 # ---------------- ANALYZE ----------------
 @app.route("/api/analyze", methods=["POST"])
@@ -150,7 +163,6 @@ def analyze():
         return {"error":"İçerik alınamadı"}
 
     r = score(text)
-
     history.insert(0, {"text":url,"risk":r})
     send_mail(text,r)
 
@@ -163,7 +175,8 @@ def data():
 # ---------------- UI ----------------
 @app.route("/")
 def home():
-    return render_template_string("""<!DOCTYPE html>
+    return render_template_string("""
+<!DOCTYPE html>
 <html>
 <head>
 <title>DEFANS</title>
@@ -172,19 +185,32 @@ body{background:#020617;color:white;font-family:Arial;}
 .container{max-width:1200px;margin:auto;padding:40px;}
 h1{text-align:center;font-size:52px;font-weight:bold;background:linear-gradient(90deg,#60a5fa,#a78bfa);-webkit-background-clip:text;color:transparent;}
 .subtitle{text-align:center;color:#94a3b8;margin-bottom:30px;}
+.hero{text-align:center;margin-bottom:20px;}
+.hero h2{font-size:28px;background:linear-gradient(90deg,#22c55e,#4ade80);-webkit-background-clip:text;color:transparent;}
+.note{font-size:13px;color:#94a3b8;margin-top:10px;}
 .stats{display:grid;grid-template-columns:repeat(3,1fr);gap:15px;margin-bottom:20px;}
 .stat{background:#0f172a;padding:20px;border-radius:15px;text-align:center;}
 .grid{display:grid;grid-template-columns:1fr 1fr;gap:20px;}
 .card{background:#0f172a;padding:20px;border-radius:15px;}
+.card:hover{transform:scale(1.02);transition:0.2s;}
 input{width:100%;padding:12px;border-radius:10px;background:#020617;color:white;border:1px solid #1e293b;}
 button{width:100%;padding:14px;border:none;border-radius:12px;background:linear-gradient(90deg,#6366f1,#a855f7);color:white;margin-top:10px;}
 .item{padding:10px;border-bottom:1px solid #1e293b;}
 .bad{color:#f59e0b}
 </style>
 </head>
+
 <body>
+
 <div class="container">
+
 <h1>DEFANS</h1>
+
+<div class="hero">
+<h2>Gerçek Zamanlı Dezenformasyon Tespiti</h2>
+<p class="note">👉 %100 AI doğruluk değil • 👉 ama kullanılabilir + dolu + stabil</p>
+</div>
+
 <p class="subtitle">Sosyal Medya Dezenformasyon Analiz Sistemi</p>
 
 <div class="stats">
@@ -218,6 +244,7 @@ button{width:100%;padding:14px;border:none;border-radius:12px;background:linear-
 </div>
 
 </div>
+
 </div>
 
 <script>
@@ -252,8 +279,10 @@ async function load(){
 setInterval(load,4000)
 load()
 </script>
+
 </body>
-</html>""")
+</html>
+""")
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
