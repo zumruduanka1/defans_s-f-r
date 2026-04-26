@@ -5,13 +5,14 @@ import feedparser
 
 app = Flask(__name__)
 
+# ENV
 TW = os.getenv("TWITTER_BEARER")
 HF_API_KEY = os.getenv("HF_API_KEY")
 EMAIL_USER = os.getenv("EMAIL_USER")
 EMAIL_PASS = os.getenv("EMAIL_PASS")
 EMAIL_TO = os.getenv("EMAIL_TO")
 
-# 🔥 BAŞLANGIÇ VERİ (takılmayı önler)
+# 🔥 başlangıç veri (takılma önler)
 feed = [{"text":"Sistem başlatılıyor...","risk":10}]
 alerts = []
 history = []
@@ -19,11 +20,12 @@ history = []
 # ---------------- MAIL ----------------
 def send_mail(text, risk):
     try:
-        if not EMAIL_USER: return
+        if not EMAIL_USER:
+            return
         msg = MIMEText(f"{text[:400]}\n\nRisk:%{risk}")
         msg["Subject"] = "DEFANS ALERT"
 
-        s = smtplib.SMTP("smtp.gmail.com",587)
+        s = smtplib.SMTP("smtp.gmail.com", 587)
         s.starttls()
         s.login(EMAIL_USER, EMAIL_PASS)
         s.sendmail(EMAIL_USER, EMAIL_TO, msg.as_string())
@@ -66,7 +68,10 @@ def score(text):
         base += 25
 
     ai = ai_score(text)
-    return min(100, int((base + ai)/2)) if ai else min(100, base)
+
+    if ai:
+        return min(100, int((base + ai)/2))
+    return min(100, base)
 
 # ---------------- SOURCES ----------------
 def get_sources():
@@ -91,6 +96,7 @@ def get_sources():
         except:
             pass
 
+    # twitter opsiyonel
     if TW:
         try:
             r = requests.get(
@@ -102,45 +108,48 @@ def get_sources():
         except:
             pass
 
-    # fallback
+    # fallback (boş kalmaz)
     if len(sources) < 10:
         sources += [
             "Sosyal medyada yayılan şok iddia",
             "Yanlış bilgi hızla yayılıyor",
             "Manipülatif içerik viral oldu",
-            "Doğruluğu teyit edilmemiş haber yayılıyor"
+            "Doğruluğu teyit edilmemiş haber yayılıyor",
+            "Gündemde tartışma yaratan açıklama"
         ]
 
     return list(set(sources))[:20]
 
 # ---------------- WORKER ----------------
-def worker():
+def worker_loop():
     global feed, alerts
 
     while True:
         try:
             data = get_sources()
 
-            f=[]; a=[]
+            new_feed = []
+            new_alerts = []
 
             for t in data:
                 r = score(t)
-                f.append({"text":t,"risk":r})
+                new_feed.append({"text": t, "risk": r})
 
                 if r >= 30:
-                    a.append({"text":t,"risk":r})
-                    send_mail(t,r)
+                    new_alerts.append({"text": t, "risk": r})
+                    send_mail(t, r)
 
-            if f:
-                feed = f
-            alerts = a
+            if new_feed:
+                feed = new_feed
+            alerts = new_alerts
 
-        except:
-            pass
+        except Exception as e:
+            print("Worker error:", e)
 
         time.sleep(10)
 
-threading.Thread(target=worker, daemon=True).start()
+# 🔥 THREAD START
+threading.Thread(target=worker_loop, daemon=True).start()
 
 # ---------------- KEEP ALIVE ----------------
 def keep_alive():
@@ -167,14 +176,19 @@ def analyze():
         return {"error":"İçerik alınamadı"}
 
     r = score(text)
-    history.insert(0, {"text":url,"risk":r})
-    send_mail(text,r)
 
-    return {"risk":r}
+    history.insert(0, {"text": url, "risk": r})
+    send_mail(text, r)
+
+    return {"risk": r}
 
 @app.route("/api/data")
 def data():
-    return {"feed":feed,"alerts":alerts,"history":history[:5]}
+    return jsonify({
+        "feed": feed,
+        "alerts": alerts,
+        "history": history[:5]
+    })
 
 # ---------------- UI ----------------
 @app.route("/")
@@ -294,4 +308,4 @@ load()
 </html>""")
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=10000)
+    app.run(host="0.0.0.0", port=10000, threaded=True)
