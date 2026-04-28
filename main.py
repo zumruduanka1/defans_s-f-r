@@ -11,21 +11,24 @@ EMAIL_USER = os.getenv("EMAIL_USER")
 EMAIL_PASS = os.getenv("EMAIL_PASS")
 EMAIL_TO = os.getenv("EMAIL_TO")
 
-history = []
-feed = []
-alerts = []
+history, feed, alerts = [], [], []
 
-# ---------------- TEXT CLEAN ----------------
-def clean_html(html):
-    text = re.sub("<[^<]+?>", "", html)
-    return text[:1000]
+# -------- TEXT --------
+def extract_text(url):
+    try:
+        r = requests.get(url, timeout=5)
+        html = re.sub(r"<script.*?>.*?</script>", "", r.text, flags=re.S)
+        html = re.sub(r"<style.*?>.*?</style>", "", html, flags=re.S)
+        text = re.sub("<[^<]+?>", "", html)
+        return " ".join(text.split())[:1200]
+    except:
+        return ""
 
-# ---------------- AI ----------------
+# -------- AI --------
 def ai_score(text):
     try:
         if not HF_API_KEY:
             return None
-
         r = requests.post(
             "https://api-inference.huggingface.co/models/facebook/bart-large-mnli",
             headers={"Authorization": f"Bearer {HF_API_KEY}"},
@@ -34,43 +37,36 @@ def ai_score(text):
                 "parameters":{
                     "candidate_labels":["yalan haber","doğru haber"]
                 }
-            },
-            timeout=6
+            }, timeout=6
         )
-
         d = r.json()
         if isinstance(d, list):
             return int(d[0]["scores"][0]*100)
     except:
         return None
 
-# ---------------- RISK ----------------
+# -------- RISK --------
 def risk_score(text):
-    base = 10
     t = text.lower()
+    score = 0
 
-    if any(x in t for x in ["şok","gizli","ifşa","komplo"]):
-        base += 30
-
-    if any(x in t for x in ["iddia","son dakika","şüpheli"]):
-        base += 20
+    for k in ["şok","gizli","ifşa","komplo","bomba iddia","yasaklandı"]:
+        if k in t:
+            score += 15
 
     ai = ai_score(text)
-
     if ai:
-        return int((base*0.3)+(ai*0.7))
+        score = int(score*0.4 + ai*0.6)
 
-    return base
+    return min(100, max(5, score))
 
-# ---------------- MAIL ----------------
+# -------- MAIL --------
 def send_email(text, risk):
     try:
         if not EMAIL_USER:
-            print("EMAIL USER YOK")
             return
-
-        msg = MIMEText(f"⚠️ Riskli içerik:\n\n{text}\n\nRisk:%{risk}")
-        msg["Subject"] = "DEFANS UYARI"
+        msg = MIMEText(f"Risk:%{risk}\n\n{text[:500]}")
+        msg["Subject"] = "DEFANS ALERT"
         msg["From"] = EMAIL_USER
         msg["To"] = EMAIL_TO
 
@@ -79,79 +75,36 @@ def send_email(text, risk):
         s.login(EMAIL_USER, EMAIL_PASS)
         s.sendmail(EMAIL_USER, EMAIL_TO, msg.as_string())
         s.quit()
-
-        print("MAIL GÖNDERİLDİ")
-
-    except Exception as e:
-        print("MAIL ERROR:", e)
-
-# ---------------- URL ----------------
-def extract_text(url):
-    try:
-        r = requests.get(url, timeout=5)
-        return clean_html(r.text)
-    except:
-        return url
-
-# ---------------- TWITTER ----------------
-def fetch_twitter():
-    data = []
-    try:
-        headers = {"Authorization": f"Bearer {TWITTER_BEARER}"}
-        params = {"query": "gündem lang:tr", "max_results": 10}
-
-        r = requests.get(
-            "https://api.twitter.com/2/tweets/search/recent",
-            headers=headers, params=params
-        )
-
-        tweets = r.json().get("data", [])
-
-        for t in tweets:
-            data.append(t["text"])
     except:
         pass
 
-    return data
-
-# ---------------- NEWS ----------------
+# -------- SOURCES --------
 def fetch_news():
-    data = []
+    data=[]
     try:
-        r = requests.get("https://news.google.com/rss?hl=tr&gl=TR&ceid=TR:tr")
-        items = r.text.split("<title>")[2:8]
-
+        r=requests.get("https://news.google.com/rss?hl=tr&gl=TR&ceid=TR:tr")
+        items=r.text.split("<title>")[2:10]
         for i in items:
             data.append(i.split("</title>")[0])
-    except:
-        pass
-
+    except: pass
     return data
 
-# ---------------- SCAN ----------------
 def scan():
     global feed, alerts
+    texts = fetch_news()
 
-    texts = fetch_twitter() + fetch_news()
-
-    if not texts:
-        texts = ["Şok iddia gündemde"]
-
-    new_feed = []
-    new_alerts = []
+    new_feed, new_alerts = [], []
 
     for t in texts:
         r = risk_score(t)
-
         item = {"text": t, "risk": r}
         new_feed.append(item)
 
         if r >= 50:
             new_alerts.append(item)
-            send_email(t, r)
 
-    feed = new_feed
-    alerts = new_alerts
+    feed = new_feed[:10]
+    alerts = new_alerts[:5]
 
 def worker():
     while True:
@@ -161,7 +114,7 @@ def worker():
 scan()
 threading.Thread(target=worker, daemon=True).start()
 
-# ---------------- API ----------------
+# -------- API --------
 @app.route("/api/analyze", methods=["POST"])
 def analyze():
     text = request.json.get("text")
@@ -170,77 +123,166 @@ def analyze():
         text = extract_text(text)
 
     r = risk_score(text)
-    label = "Şüpheli" if r >= 50 else "Güvenli"
+    label = "Şüpheli" if r>=50 else "Güvenli"
 
-    history.insert(0, {"text": text[:200], "risk": r})
+    history.insert(0, {"text": text[:80], "risk": r})
 
-    if r >= 50:
+    if r>=50:
         send_email(text, r)
 
-    return {"risk": r, "label": label}
+    return {"risk":r, "label":label}
 
 @app.route("/api/all")
 def all_data():
-    return {"feed": feed, "alerts": alerts, "history": history}
+    return {"feed":feed,"alerts":alerts,"history":history}
 
-# ---------------- UI ----------------
+# -------- UI --------
 @app.route("/")
 def home():
     return """
 <!DOCTYPE html>
 <html>
 <head>
-<title>DEFANS</title>
+<meta charset="UTF-8">
+<title>DEFANS PRO</title>
+
 <style>
-body{background:#020617;color:white;font-family:Arial;margin:0}
-.container{max-width:1200px;margin:auto;padding:40px}
-h1{text-align:center;font-size:48px}
+body {
+    margin:0;
+    font-family:Inter, sans-serif;
+    background:linear-gradient(180deg,#020617,#020617);
+    color:white;
+}
 
-.grid{display:grid;grid-template-columns:1fr 1fr;gap:20px}
-.card{background:#0f172a;padding:20px;border-radius:15px}
+.topbar {
+    display:flex;
+    justify-content:space-between;
+    padding:20px 40px;
+}
 
-textarea{width:100%;padding:10px;background:#020617;color:white;border:none;border-radius:10px}
-button{width:100%;padding:12px;background:#6366f1;border:none;border-radius:10px;color:white;margin-top:10px}
+.logo {
+    font-weight:700;
+}
 
-.item{padding:10px;border-bottom:1px solid #1e293b}
-.risk{color:#ef4444}
-.safe{color:#10b981}
-.alert{color:#f97316}
+.badge {
+    background:#1e293b;
+    padding:6px 12px;
+    border-radius:20px;
+    font-size:12px;
+}
+
+.hero {
+    text-align:center;
+    margin-top:40px;
+}
+
+.hero h1 {
+    font-size:44px;
+    font-weight:800;
+}
+
+.hero p {
+    color:#9ca3af;
+    max-width:600px;
+    margin:auto;
+}
+
+.stats {
+    display:flex;
+    justify-content:center;
+    gap:20px;
+    margin-top:30px;
+}
+
+.stat {
+    background:#0f172a;
+    padding:20px;
+    border-radius:12px;
+    text-align:center;
+    width:120px;
+}
+
+.main {
+    display:grid;
+    grid-template-columns:1fr 1fr;
+    gap:20px;
+    max-width:1100px;
+    margin:40px auto;
+}
+
+.card {
+    background:#0f172a;
+    padding:20px;
+    border-radius:16px;
+}
+
+textarea {
+    width:100%;
+    height:120px;
+    background:#020617;
+    border:none;
+    border-radius:10px;
+    color:white;
+    padding:10px;
+}
+
+button {
+    width:100%;
+    padding:12px;
+    margin-top:10px;
+    border:none;
+    border-radius:10px;
+    background:linear-gradient(90deg,#6366f1,#8b5cf6);
+    color:white;
+    font-weight:600;
+}
+
+.item {
+    padding:10px;
+    border-bottom:1px solid #1e293b;
+}
+
+.risk {color:#f59e0b;}
+.safe {color:#10b981;}
 </style>
 </head>
+
 <body>
 
-<div class="container">
-<h1>DEFANS</h1>
+<div class="topbar">
+<div class="logo">🛡 DEFANS PRO</div>
+<div class="badge">AI Powered</div>
+</div>
 
-<div class="grid">
+<div class="hero">
+<h1>Dezenformasyona Karşı Yapay Zeka Kalkanı</h1>
+<p>Yalan haberleri, manipülasyonu ve dezenformasyonu anında tespit edin.</p>
+
+<div class="stats">
+<div class="stat"><div id="total">0</div>Toplam</div>
+<div class="stat"><div id="bad">0</div>Riskli</div>
+<div class="stat"><div id="good">0</div>Güvenli</div>
+</div>
+</div>
+
+<div class="main">
+
 <div class="card">
-<textarea id="text" placeholder="Metin veya link gir..."></textarea>
-<button onclick="analyze()">Analiz Et</button>
-<h2 id="res"></h2>
+<h3>Yeni Analiz</h3>
+<textarea id="text" placeholder="URL gir..."></textarea>
+<button onclick="analyze()">Analiz Başlat</button>
+<h3 id="res"></h3>
 </div>
 
 <div class="card">
-<h3>⚠️ Riskli İçerikler</h3>
-<div id="alerts"></div>
-</div>
-</div>
-
-<div class="grid" style="margin-top:20px">
-<div class="card">
-<h3>Akış</h3>
-<div id="feed"></div>
-</div>
-
-<div class="card">
-<h3>Geçmiş</h3>
+<h3>Son Analizler</h3>
 <div id="history"></div>
-</div>
 </div>
 
 </div>
 
 <script>
+
 async function analyze(){
  let t=document.getElementById("text").value
 
@@ -259,29 +301,26 @@ async function load(){
  let r=await fetch("/api/all")
  let d=await r.json()
 
- let f="",h="",a=""
-
- d.feed.forEach(x=>{
-  let cls=x.risk>=50?"risk":"safe"
-  f+=`<div class="item ${cls}">${x.text} (%${x.risk})</div>`
- })
+ let h=""
+ let total=0, bad=0, good=0
 
  d.history.forEach(x=>{
+  total++
+  if(x.risk>=50) bad++; else good++
+
   let cls=x.risk>=50?"risk":"safe"
   h+=`<div class="item ${cls}">${x.text} (%${x.risk})</div>`
  })
 
- d.alerts.forEach(x=>{
-  a+=`<div class="item alert">${x.text} (%${x.risk})</div>`
- })
-
- document.getElementById("feed").innerHTML=f
  document.getElementById("history").innerHTML=h
- document.getElementById("alerts").innerHTML=a
+ document.getElementById("total").innerText=total
+ document.getElementById("bad").innerText=bad
+ document.getElementById("good").innerText=good
 }
 
-setInterval(load,5000)
+setInterval(load,4000)
 load()
+
 </script>
 
 </body>
