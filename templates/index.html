@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>DEFANS PRO</title>
+
+<style>
+body{
+background:#020617;
+color:white;
+font-family:Arial;
+margin:0;
+}
+.container{
+max-width:1100px;
+margin:auto;
+padding:40px;
+}
+.title{
+text-align:center;
+font-size:42px;
+font-weight:bold;
+}
+.subtitle{
+text-align:center;
+color:#94a3b8;
+margin-bottom:40px;
+}
+.grid{
+display:grid;
+grid-template-columns:1fr 1fr;
+gap:20px;
+}
+.card{
+background:#0f172a;
+padding:20px;
+border-radius:16px;
+}
+textarea{
+width:100%;
+height:120px;
+background:#020617;
+color:white;
+border:none;
+border-radius:10px;
+padding:10px;
+}
+button{
+width:100%;
+padding:14px;
+margin-top:10px;
+background:linear-gradient(90deg,#6366f1,#9333ea);
+border:none;
+border-radius:10px;
+color:white;
+font-weight:bold;
+}
+.item{
+padding:10px;
+border-bottom:1px solid #1e293b;
+}
+.risk{color:#f59e0b;}
+.safe{color:#10b981;}
+</style>
+</head>
+
+<body>
+
+<div class="container">
+
+<div class="title">DEFANS</div>
+<div class="subtitle">Dezenformasyon Analiz Sistemi</div>
+
+<div class="grid">
+
+<div class="card">
+<textarea id="text" placeholder="URL veya metin"></textarea>
+<button onclick="analyze()">Analiz</button>
+<h3 id="res"></h3>
+</div>
+
+<div class="card">
+<h3>Canlı Kaynaklar</h3>
+<div id="feed"></div>
+</div>
+
+</div>
+
+</div>
+
+<script>
+
+async function analyze(){
+ let t=document.getElementById("text").value
+
+ let r=await fetch("/api/analyze",{
+  method:"POST",
+  headers:{"Content-Type":"application/json"},
+  body:JSON.stringify({text:t})
+ })
+
+ let d=await r.json()
+ document.getElementById("res").innerText="Risk:%"+d.risk+" "+d.label
+}
+
+async function load(){
+ let r=await fetch("/api/feed")
+ let d=await r.json()
+
+ let html=""
+ d.forEach(x=>{
+  let c=x.risk>=50?"risk":"safe"
+  html+=`<div class="item ${c}">${x.text} (%${x.risk})</div>`
+ })
+
+ document.getElementById("feed").innerHTML=html
+}
+
+setInterval(load,5000)
+load()
+
+</script>
+
+</body>
+</html>
