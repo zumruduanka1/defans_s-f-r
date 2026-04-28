@@ -23,26 +23,24 @@ def clean_html(html):
 # ---------------- AI ----------------
 def ai_score(text):
     try:
+        if not HF_API_KEY:
+            return None
+
         r = requests.post(
             "https://api-inference.huggingface.co/models/facebook/bart-large-mnli",
             headers={"Authorization": f"Bearer {HF_API_KEY}"},
             json={
                 "inputs": text,
                 "parameters":{
-                    "candidate_labels":[
-                        "yalan haber",
-                        "doğru haber"
-                    ]
+                    "candidate_labels":["yalan haber","doğru haber"]
                 }
             },
             timeout=6
         )
 
         d = r.json()
-
         if isinstance(d, list):
             return int(d[0]["scores"][0]*100)
-
     except:
         return None
 
@@ -67,6 +65,10 @@ def risk_score(text):
 # ---------------- MAIL ----------------
 def send_email(text, risk):
     try:
+        if not EMAIL_USER:
+            print("EMAIL USER YOK")
+            return
+
         msg = MIMEText(f"⚠️ Riskli içerik:\n\n{text}\n\nRisk:%{risk}")
         msg["Subject"] = "DEFANS UYARI"
         msg["From"] = EMAIL_USER
@@ -77,6 +79,9 @@ def send_email(text, risk):
         s.login(EMAIL_USER, EMAIL_PASS)
         s.sendmail(EMAIL_USER, EMAIL_TO, msg.as_string())
         s.quit()
+
+        print("MAIL GÖNDERİLDİ")
+
     except Exception as e:
         print("MAIL ERROR:", e)
 
@@ -91,7 +96,6 @@ def extract_text(url):
 # ---------------- TWITTER ----------------
 def fetch_twitter():
     data = []
-
     try:
         headers = {"Authorization": f"Bearer {TWITTER_BEARER}"}
         params = {"query": "gündem lang:tr", "max_results": 10}
@@ -113,18 +117,14 @@ def fetch_twitter():
 # ---------------- NEWS ----------------
 def fetch_news():
     data = []
-    urls = [
-        "https://news.google.com/rss?hl=tr&gl=TR&ceid=TR:tr"
-    ]
+    try:
+        r = requests.get("https://news.google.com/rss?hl=tr&gl=TR&ceid=TR:tr")
+        items = r.text.split("<title>")[2:8]
 
-    for u in urls:
-        try:
-            r = requests.get(u)
-            items = r.text.split("<title>")[2:6]
-            for i in items:
-                data.append(i.split("</title>")[0])
-        except:
-            pass
+        for i in items:
+            data.append(i.split("</title>")[0])
+    except:
+        pass
 
     return data
 
@@ -142,8 +142,8 @@ def scan():
 
     for t in texts:
         r = risk_score(t)
-        item = {"text": t, "risk": r}
 
+        item = {"text": t, "risk": r}
         new_feed.append(item)
 
         if r >= 50:
@@ -186,7 +186,107 @@ def all_data():
 # ---------------- UI ----------------
 @app.route("/")
 def home():
-    return "<h1 style='color:white;background:black;text-align:center'>DEFANS AKTİF</h1>"
+    return """
+<!DOCTYPE html>
+<html>
+<head>
+<title>DEFANS</title>
+<style>
+body{background:#020617;color:white;font-family:Arial;margin:0}
+.container{max-width:1200px;margin:auto;padding:40px}
+h1{text-align:center;font-size:48px}
+
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:20px}
+.card{background:#0f172a;padding:20px;border-radius:15px}
+
+textarea{width:100%;padding:10px;background:#020617;color:white;border:none;border-radius:10px}
+button{width:100%;padding:12px;background:#6366f1;border:none;border-radius:10px;color:white;margin-top:10px}
+
+.item{padding:10px;border-bottom:1px solid #1e293b}
+.risk{color:#ef4444}
+.safe{color:#10b981}
+.alert{color:#f97316}
+</style>
+</head>
+<body>
+
+<div class="container">
+<h1>DEFANS</h1>
+
+<div class="grid">
+<div class="card">
+<textarea id="text" placeholder="Metin veya link gir..."></textarea>
+<button onclick="analyze()">Analiz Et</button>
+<h2 id="res"></h2>
+</div>
+
+<div class="card">
+<h3>⚠️ Riskli İçerikler</h3>
+<div id="alerts"></div>
+</div>
+</div>
+
+<div class="grid" style="margin-top:20px">
+<div class="card">
+<h3>Akış</h3>
+<div id="feed"></div>
+</div>
+
+<div class="card">
+<h3>Geçmiş</h3>
+<div id="history"></div>
+</div>
+</div>
+
+</div>
+
+<script>
+async function analyze(){
+ let t=document.getElementById("text").value
+
+ let r=await fetch("/api/analyze",{
+  method:"POST",
+  headers:{"Content-Type":"application/json"},
+  body:JSON.stringify({text:t})
+ })
+
+ let d=await r.json()
+ document.getElementById("res").innerText="Risk:%"+d.risk+" "+d.label
+ load()
+}
+
+async function load(){
+ let r=await fetch("/api/all")
+ let d=await r.json()
+
+ let f="",h="",a=""
+
+ d.feed.forEach(x=>{
+  let cls=x.risk>=50?"risk":"safe"
+  f+=`<div class="item ${cls}">${x.text} (%${x.risk})</div>`
+ })
+
+ d.history.forEach(x=>{
+  let cls=x.risk>=50?"risk":"safe"
+  h+=`<div class="item ${cls}">${x.text} (%${x.risk})</div>`
+ })
+
+ d.alerts.forEach(x=>{
+  a+=`<div class="item alert">${x.text} (%${x.risk})</div>`
+ })
+
+ document.getElementById("feed").innerHTML=f
+ document.getElementById("history").innerHTML=h
+ document.getElementById("alerts").innerHTML=a
+}
+
+setInterval(load,5000)
+load()
+</script>
+
+</body>
+</html>
+"""
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
