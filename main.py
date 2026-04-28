@@ -1,5 +1,5 @@
 from flask import Flask, request, jsonify
-import requests, os, smtplib, threading, time, re
+import requests, os, smtplib, threading, time, re, html
 from email.mime.text import MIMEText
 
 app = Flask(__name__)
@@ -13,59 +13,70 @@ EMAIL_TO = os.getenv("EMAIL_TO")
 
 history, feed, alerts = [], [], []
 
-# -------- TEXT --------
+# ---------------- TEXT CLEAN ----------------
 def extract_text(url):
     try:
-        r = requests.get(url, timeout=5)
-        html = re.sub(r"<script.*?>.*?</script>", "", r.text, flags=re.S)
-        html = re.sub(r"<style.*?>.*?</style>", "", html, flags=re.S)
-        text = re.sub("<[^<]+?>", "", html)
-        return " ".join(text.split())[:1200]
+        r = requests.get(url, timeout=6, headers={"User-Agent":"Mozilla/5.0"})
+        html_txt = r.text
+
+        html_txt = re.sub(r"<script.*?>.*?</script>", "", html_txt, flags=re.S)
+        html_txt = re.sub(r"<style.*?>.*?</style>", "", html_txt, flags=re.S)
+
+        text = re.sub("<[^<]+?>", "", html_txt)
+        text = html.unescape(text)
+        text = " ".join(text.split())
+
+        return text[:2000]
     except:
         return ""
 
-# -------- AI --------
+# ---------------- AI ----------------
 def ai_score(text):
     try:
         if not HF_API_KEY:
             return None
+
         r = requests.post(
             "https://api-inference.huggingface.co/models/facebook/bart-large-mnli",
             headers={"Authorization": f"Bearer {HF_API_KEY}"},
             json={
                 "inputs": text,
-                "parameters":{
-                    "candidate_labels":["yalan haber","doğru haber"]
-                }
-            }, timeout=6
+                "parameters":{"candidate_labels":["yalan haber","doğru haber"]}
+            },
+            timeout=8
         )
+
         d = r.json()
         if isinstance(d, list):
-            return int(d[0]["scores"][0]*100)
+            return int(d[0]["scores"][0] * 100)
     except:
         return None
 
-# -------- RISK --------
+# ---------------- RISK ----------------
 def risk_score(text):
     t = text.lower()
     score = 0
 
-    for k in ["şok","gizli","ifşa","komplo","bomba iddia","yasaklandı"]:
+    for k in ["şok","gizli","ifşa","komplo","bomba iddia","yasaklandı","son dakika","iddia"]:
         if k in t:
-            score += 15
+            score += 12
+
+    if "!" in text:
+        score += 5
 
     ai = ai_score(text)
     if ai:
-        score = int(score*0.4 + ai*0.6)
+        score = int(score * 0.3 + ai * 0.7)
 
     return min(100, max(5, score))
 
-# -------- MAIL --------
+# ---------------- MAIL ----------------
 def send_email(text, risk):
     try:
         if not EMAIL_USER:
             return
-        msg = MIMEText(f"Risk:%{risk}\n\n{text[:500]}")
+
+        msg = MIMEText(f"⚠️ Risk:%{risk}\n\n{text[:400]}")
         msg["Subject"] = "DEFANS ALERT"
         msg["From"] = EMAIL_USER
         msg["To"] = EMAIL_TO
@@ -78,49 +89,125 @@ def send_email(text, risk):
     except:
         pass
 
-# -------- SOURCES --------
-def fetch_news():
-    data=[]
+# ---------------- RSS PARSER ----------------
+def parse_rss(url):
+    data = []
     try:
-        r=requests.get("https://news.google.com/rss?hl=tr&gl=TR&ceid=TR:tr")
-        items=r.text.split("<title>")[2:10]
-        for i in items:
-            data.append(i.split("</title>")[0])
-    except: pass
+        r = requests.get(url, timeout=6)
+        items = re.findall(r"<item>(.*?)</item>", r.text, re.S)
+
+        for item in items[:10]:
+            title = re.search(r"<title>(.*?)</title>", item)
+            link = re.search(r"<link>(.*?)</link>", item)
+
+            if title:
+                t = html.unescape(title.group(1))
+                if link:
+                    data.append({"text": t, "url": link.group(1)})
+                else:
+                    data.append({"text": t, "url": None})
+    except:
+        pass
+
     return data
 
+# ---------------- NEWS SOURCES ----------------
+def fetch_news():
+    sources = [
+        "https://news.google.com/rss?hl=tr&gl=TR&ceid=TR:tr",
+        "https://www.trthaber.com/rss/manset.rss",
+        "https://www.hurriyet.com.tr/rss/anasayfa",
+    ]
+
+    all_data = []
+    for s in sources:
+        all_data += parse_rss(s)
+
+    return all_data
+
+# ---------------- TWITTER ----------------
+def fetch_twitter():
+    data = []
+
+    if not TWITTER_BEARER:
+        return data
+
+    queries = [
+        "gündem lang:tr",
+        "son dakika lang:tr",
+        "iddia lang:tr"
+    ]
+
+    try:
+        headers = {"Authorization": f"Bearer {TWITTER_BEARER}"}
+
+        for q in queries:
+            r = requests.get(
+                "https://api.twitter.com/2/tweets/search/recent",
+                headers=headers,
+                params={"query": q, "max_results": 10}
+            )
+
+            tweets = r.json().get("data", [])
+
+            for t in tweets:
+                data.append({"text": t["text"], "url": None})
+
+    except:
+        pass
+
+    return data
+
+# ---------------- SCAN ----------------
 def scan():
     global feed, alerts
-    texts = fetch_news()
 
-    new_feed, new_alerts = [], []
+    items = fetch_twitter() + fetch_news()
 
-    for t in texts:
-        r = risk_score(t)
-        item = {"text": t, "risk": r}
-        new_feed.append(item)
+    if not items:
+        items = [{"text": "Gündem veri akışı bekleniyor...", "url": None}]
+
+    new_feed = []
+    new_alerts = []
+
+    for item in items:
+        text = item["text"]
+
+        if item["url"]:
+            content = extract_text(item["url"])
+            if len(content) > 100:
+                text = content
+
+        r = risk_score(text)
+
+        obj = {"text": item["text"][:120], "risk": r}
+        new_feed.append(obj)
 
         if r >= 50:
-            new_alerts.append(item)
+            new_alerts.append(obj)
+            send_email(text, r)
 
-    feed = new_feed[:10]
-    alerts = new_alerts[:5]
+    feed = new_feed[:20]
+    alerts = new_alerts[:10]
 
 def worker():
     while True:
         scan()
-        time.sleep(60)
+        time.sleep(45)
 
 scan()
 threading.Thread(target=worker, daemon=True).start()
 
-# -------- API --------
+# ---------------- API ----------------
 @app.route("/api/analyze", methods=["POST"])
 def analyze():
     text = request.json.get("text")
 
     if text.startswith("http"):
         text = extract_text(text)
+
+    if len(text) < 20:
+        return {"risk":0,"label":"Yetersiz veri"}
 
     r = risk_score(text)
     label = "Şüpheli" if r>=50 else "Güvenli"
@@ -136,196 +223,7 @@ def analyze():
 def all_data():
     return {"feed":feed,"alerts":alerts,"history":history}
 
-# -------- UI --------
+# ---------------- UI (DOKUNMADIM) ----------------
 @app.route("/")
 def home():
-    return """
-<!DOCTYPE html>
-<html>
-<head>
-<meta charset="UTF-8">
-<title>DEFANS PRO</title>
-
-<style>
-body {
-    margin:0;
-    font-family:Inter, sans-serif;
-    background:linear-gradient(180deg,#020617,#020617);
-    color:white;
-}
-
-.topbar {
-    display:flex;
-    justify-content:space-between;
-    padding:20px 40px;
-}
-
-.logo {
-    font-weight:700;
-}
-
-.badge {
-    background:#1e293b;
-    padding:6px 12px;
-    border-radius:20px;
-    font-size:12px;
-}
-
-.hero {
-    text-align:center;
-    margin-top:40px;
-}
-
-.hero h1 {
-    font-size:44px;
-    font-weight:800;
-}
-
-.hero p {
-    color:#9ca3af;
-    max-width:600px;
-    margin:auto;
-}
-
-.stats {
-    display:flex;
-    justify-content:center;
-    gap:20px;
-    margin-top:30px;
-}
-
-.stat {
-    background:#0f172a;
-    padding:20px;
-    border-radius:12px;
-    text-align:center;
-    width:120px;
-}
-
-.main {
-    display:grid;
-    grid-template-columns:1fr 1fr;
-    gap:20px;
-    max-width:1100px;
-    margin:40px auto;
-}
-
-.card {
-    background:#0f172a;
-    padding:20px;
-    border-radius:16px;
-}
-
-textarea {
-    width:100%;
-    height:120px;
-    background:#020617;
-    border:none;
-    border-radius:10px;
-    color:white;
-    padding:10px;
-}
-
-button {
-    width:100%;
-    padding:12px;
-    margin-top:10px;
-    border:none;
-    border-radius:10px;
-    background:linear-gradient(90deg,#6366f1,#8b5cf6);
-    color:white;
-    font-weight:600;
-}
-
-.item {
-    padding:10px;
-    border-bottom:1px solid #1e293b;
-}
-
-.risk {color:#f59e0b;}
-.safe {color:#10b981;}
-</style>
-</head>
-
-<body>
-
-<div class="topbar">
-<div class="logo">🛡 DEFANS PRO</div>
-<div class="badge">AI Powered</div>
-</div>
-
-<div class="hero">
-<h1>Dezenformasyona Karşı Yapay Zeka Kalkanı</h1>
-<p>Yalan haberleri, manipülasyonu ve dezenformasyonu anında tespit edin.</p>
-
-<div class="stats">
-<div class="stat"><div id="total">0</div>Toplam</div>
-<div class="stat"><div id="bad">0</div>Riskli</div>
-<div class="stat"><div id="good">0</div>Güvenli</div>
-</div>
-</div>
-
-<div class="main">
-
-<div class="card">
-<h3>Yeni Analiz</h3>
-<textarea id="text" placeholder="URL gir..."></textarea>
-<button onclick="analyze()">Analiz Başlat</button>
-<h3 id="res"></h3>
-</div>
-
-<div class="card">
-<h3>Son Analizler</h3>
-<div id="history"></div>
-</div>
-
-</div>
-
-<script>
-
-async function analyze(){
- let t=document.getElementById("text").value
-
- let r=await fetch("/api/analyze",{
-  method:"POST",
-  headers:{"Content-Type":"application/json"},
-  body:JSON.stringify({text:t})
- })
-
- let d=await r.json()
- document.getElementById("res").innerText="Risk:%"+d.risk+" "+d.label
- load()
-}
-
-async function load(){
- let r=await fetch("/api/all")
- let d=await r.json()
-
- let h=""
- let total=0, bad=0, good=0
-
- d.history.forEach(x=>{
-  total++
-  if(x.risk>=50) bad++; else good++
-
-  let cls=x.risk>=50?"risk":"safe"
-  h+=`<div class="item ${cls}">${x.text} (%${x.risk})</div>`
- })
-
- document.getElementById("history").innerHTML=h
- document.getElementById("total").innerText=total
- document.getElementById("bad").innerText=bad
- document.getElementById("good").innerText=good
-}
-
-setInterval(load,4000)
-load()
-
-</script>
-
-</body>
-</html>
-"""
-
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=10000)
+    return open("ui.html").read()
