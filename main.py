@@ -190,4 +190,125 @@ def all_data():
 # ---------------- UI ----------------
 @app.route("/")
 def home():
-    return open("ui.html").read()
+    return """
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>DEFANS PRO</title>
+
+<style>
+body {
+    margin:0;
+    font-family:Arial;
+    background:#020617;
+    color:white;
+}
+.container {
+    max-width:1100px;
+    margin:auto;
+    padding:40px;
+}
+h1 {
+    text-align:center;
+    font-size:40px;
+}
+.grid {
+    display:grid;
+    grid-template-columns:1fr 1fr;
+    gap:20px;
+    margin-top:30px;
+}
+.card {
+    background:#0f172a;
+    padding:20px;
+    border-radius:12px;
+}
+textarea {
+    width:100%;
+    height:120px;
+    background:#020617;
+    color:white;
+    border:none;
+    border-radius:10px;
+    padding:10px;
+}
+button {
+    width:100%;
+    padding:12px;
+    margin-top:10px;
+    background:#6366f1;
+    border:none;
+    border-radius:10px;
+    color:white;
+}
+.item {
+    padding:10px;
+    border-bottom:1px solid #1e293b;
+}
+.risk {color:#f59e0b;}
+.safe {color:#10b981;}
+</style>
+</head>
+
+<body>
+
+<div class="container">
+
+<h1>Dezenformasyona Karşı Yapay Zeka Kalkanı</h1>
+
+<div class="grid">
+
+<div class="card">
+<textarea id="text" placeholder="URL gir..."></textarea>
+<button onclick="analyze()">Analiz Et</button>
+<h3 id="res"></h3>
+</div>
+
+<div class="card">
+<h3>Sonuçlar</h3>
+<div id="history"></div>
+</div>
+
+</div>
+
+</div>
+
+<script>
+
+async function analyze(){
+ let t=document.getElementById("text").value
+
+ let r=await fetch("/api/analyze",{
+  method:"POST",
+  headers:{"Content-Type":"application/json"},
+  body:JSON.stringify({text:t})
+ })
+
+ let d=await r.json()
+ document.getElementById("res").innerText="Risk:%"+d.risk+" "+d.label
+ load()
+}
+
+async function load(){
+ let r=await fetch("/api/all")
+ let d=await r.json()
+
+ let h=""
+
+ d.history.forEach(x=>{
+  let cls=x.risk>=50?"risk":"safe"
+  h+=`<div class="item ${cls}">${x.text} (%${x.risk})</div>`
+ })
+
+ document.getElementById("history").innerHTML=h
+}
+
+setInterval(load,4000)
+load()
+
+</script>
+
+</body>
+</html>
+"""
